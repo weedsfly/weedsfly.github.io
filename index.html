@@ -1,0 +1,881 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>代码里的秋天</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0;
+    height: 100%; width: 100%;
+    overflow: hidden;
+    background: #131019;
+    cursor: crosshair;
+  }
+  #scene {
+    display: block;
+    width: 100%; height: 100%;
+    opacity: 0;
+    transition: opacity 1.6s ease;
+  }
+  #scene.ready { opacity: 1; }
+
+  /* 暗角 + 颗粒，纯 CSS，不占 canvas 性能 */
+  .vignette {
+    position: fixed; inset: 0; pointer-events: none;
+    background:
+      radial-gradient(ellipse 120% 90% at 50% 42%, rgba(0,0,0,0) 38%, rgba(10,8,16,.42) 78%, rgba(8,6,14,.72) 100%);
+  }
+  .grain {
+    position: fixed; inset: 0; pointer-events: none;
+    opacity: .045; mix-blend-mode: overlay;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)'/%3E%3C/svg%3E");
+  }
+
+  .ui {
+    position: fixed; inset: 0;
+    pointer-events: none;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    padding: clamp(24px, 5vw, 56px);
+  }
+
+  .title-block {
+    opacity: 0;
+    transform: translateY(14px);
+    animation: rise 1.5s cubic-bezier(.22,.9,.3,1) .9s forwards;
+  }
+  h1 {
+    margin: 0;
+    font-family: "Songti SC", "STSong", "Noto Serif SC", "Source Han Serif SC", Georgia, serif;
+    font-size: clamp(26px, 4.4vw, 46px);
+    font-weight: 400;
+    letter-spacing: .22em;
+    color: rgba(255, 246, 232, .95);
+    text-shadow: 0 2px 26px rgba(30, 12, 4, .55);
+  }
+  .kicker {
+    margin: 14px 0 0;
+    font-family: Georgia, "Times New Roman", serif;
+    font-size: clamp(9px, 1.1vw, 11px);
+    letter-spacing: .38em;
+    color: rgba(255, 226, 186, .6);
+    text-transform: uppercase;
+  }
+  .rule {
+    width: 46px; height: 1px;
+    margin: 18px 0 0;
+    background: linear-gradient(90deg, rgba(240,180,90,.9), rgba(240,180,90,0));
+  }
+
+  .hint {
+    align-self: flex-end;
+    text-align: right;
+    font-size: clamp(10px, 1.1vw, 12px);
+    letter-spacing: .18em;
+    line-height: 2.1;
+    color: rgba(255, 238, 216, .55);
+    text-shadow: 0 1px 10px rgba(14, 8, 6, .85), 0 0 2px rgba(14, 8, 6, .6);
+    font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+    opacity: 0;
+    animation: fade 1.8s ease 2.2s forwards;
+  }
+  .hint b { color: rgba(255, 220, 170, .7); font-weight: 400; }
+  .hint em { font-style: normal; }
+  .dot {
+    display: inline-block;
+    width: 3px; height: 3px; border-radius: 50%;
+    background: rgba(240,180,90,.8);
+    margin: 0 .5em 3px;
+  }
+
+  @keyframes rise {
+    to { opacity: 1; transform: translateY(0); }
+  }
+  @keyframes fade {
+    to { opacity: 1; }
+  }
+
+  @media (max-width: 600px) {
+    .hint {
+      align-self: center;
+      text-align: center;
+      letter-spacing: .14em;
+      line-height: 1.9;
+      background: rgba(12, 9, 16, .40);
+      -webkit-backdrop-filter: blur(7px);
+      backdrop-filter: blur(7px);
+      padding: 10px 20px;
+      border-radius: 999px;
+    }
+    h1 { letter-spacing: .18em; }
+  }
+</style>
+</head>
+<body>
+
+<canvas id="scene"></canvas>
+<div class="vignette"></div>
+<div class="grain"></div>
+
+<div class="ui">
+  <div class="title-block">
+    <h1>代码里的秋天</h1>
+    <p class="kicker">Autumn in Hangzhou · 2026</p>
+    <div class="rule"></div>
+  </div>
+  <div class="hint">
+    <span class="dot"></span>移动鼠标<em>，</em>起一阵风<br>
+    <span class="dot"></span>轻点画面<em>，</em>落一场叶雨
+  </div>
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  var cvs = document.getElementById('scene');
+  var ctx = cvs.getContext('2d');
+
+  var W = 0, H = 0, DPR = 1, horizonY = 0, groundY = 0;
+
+  var bg = null, bgx = null;         // 静态背景层
+  var treeCv = null, treeCx = null;  // 树（含轻微摇摆）
+
+  var ridges = [], clouds = [], glints = [], reeds = [], birds = [], fgLeaves = [];
+  var leaves = [];
+  var sun = { x: 0, y: 0, r: 0 };
+
+  var wind = 0, windTarget = 0, gust = 0, time = 0, lastTime = 0;
+  var treeRootX = 0;
+
+  var LEAF_COLORS = ['#e9b64a', '#e0a83a', '#d69a30', '#c9882b', '#b8722a', '#d9ae4e', '#c47230', '#e3a940'];
+
+  // ---------- 工具 ----------
+  function rand(min, max) { return min + Math.random() * (max - min); }
+  function pick(arr) { return arr[(Math.random() * arr.length) | 0]; }
+
+  function mulberry32(a) {
+    return function () {
+      a |= 0; a = a + 0x6D2B79F5 | 0;
+      var t = Math.imul(a ^ a >>> 15, 1 | a);
+      t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+      return ((t ^ t >>> 14) >>> 0) / 4294967296;
+    };
+  }
+
+  // ---------- 场景构建 ----------
+  function buildRidges() {
+    ridges = [
+      { y: horizonY - 104, amp: 66, color: 'rgba(104,95,128,0.52)', seed: 11, n: 9 },
+      { y: horizonY - 58,  amp: 50, color: 'rgba(66,58,88,0.82)',   seed: 27, n: 11 },
+      { y: horizonY - 20,  amp: 32, color: 'rgba(38,32,52,0.97)',   seed: 43, n: 13 }
+    ];
+    ridges.forEach(function (r) {
+      var rnd = mulberry32(r.seed);
+      var pts = [];
+      for (var i = 0; i <= r.n; i++) {
+        var x = (i / r.n) * W + rand(-W * 0.02, W * 0.02);
+        var base = Math.sin(i * 1.6 + r.seed) * 0.45 + Math.sin(i * 0.7 + r.seed * 1.7) * 0.55;
+        var y = r.y - (base * 0.5 + rnd() * 0.9) * r.amp;
+        pts.push({ x: x, y: y });
+      }
+      pts.sort(function (a, b) { return a.x - b.x; });
+      r.pts = pts;
+    });
+  }
+
+  function pathRidge(g, pts, bottom) {
+    var b = (bottom === undefined) ? H : bottom;
+    g.beginPath();
+    g.moveTo(-20, b);
+    g.lineTo(-20, pts[0].y);
+    g.lineTo(pts[0].x, pts[0].y);
+    for (var i = 0; i < pts.length - 1; i++) {
+      var p0 = pts[i], p1 = pts[i + 1];
+      var mx = (p0.x + p1.x) / 2, my = (p0.y + p1.y) / 2;
+      g.quadraticCurveTo(p0.x, p0.y, mx, my);
+    }
+    var last = pts[pts.length - 1];
+    g.lineTo(last.x, last.y);
+    g.lineTo(W + 20, pts[pts.length - 1].y);
+    g.lineTo(W + 20, b);
+    g.closePath();
+  }
+
+  function buildClouds() {
+    clouds = [];
+    var spec = [
+      [0.18, 0.16, 0.42, 0.030], [0.55, 0.24, 0.55, 0.036],
+      [0.84, 0.11, 0.36, 0.024], [0.32, 0.34, 0.62, 0.028],
+      [0.72, 0.40, 0.48, 0.022], [0.06, 0.28, 0.30, 0.020]
+    ];
+    for (var i = 0; i < spec.length; i++) {
+      var s = spec[i];
+      clouds.push({ x: s[0] * W, y: s[1] * H, rx: s[2] * W * 0.5, ry: s[2] * H * 0.10, a: s[3] });
+    }
+  }
+
+  function buildWater() {
+    glints = [];
+    var count = Math.round((W * (H - horizonY)) / 3400);
+    for (var i = 0; i < count; i++) {
+      var nearSun = Math.random() < 0.62;
+      var cx = nearSun ? sun.x + rand(-W * 0.15, W * 0.15) : rand(0, W);
+      var t = Math.pow(Math.random(), 1.7);
+      var y = horizonY + 3 + t * (groundY - horizonY - 6);
+      glints.push({
+        x: Math.max(0, Math.min(W, cx + rand(-W * 0.22, W * 0.22))),
+        y: y,
+        len: 3 + t * 26 * rand(0.4, 1.1),
+        sp: rand(0.4, 1.6),
+        ph: rand(0, 6.28),
+        base: rand(0.10, 0.42) * (1 - t * 0.3)
+      });
+    }
+  }
+
+  function buildReeds() {
+    reeds = [];
+    var groups = [
+      { x0: -10, x1: W * 0.20, y: groundY + 8, n: 26, h: [40, 120] },
+      { x0: W * 0.86, x1: W + 20, y: groundY + 14, n: 16, h: [30, 92] }
+    ];
+    groups.forEach(function (g) {
+      for (var i = 0; i < g.n; i++) {
+        reeds.push({
+          x: rand(g.x0, g.x1),
+          y: g.y + rand(-6, 10),
+          h: rand(g.h[0], g.h[1]),
+          bend: rand(-0.35, 0.35),
+          ph: rand(0, 6.28),
+          sp: rand(0.5, 1.1),
+          w: rand(1.1, 2.2)
+        });
+      }
+    });
+  }
+
+  function buildBirds() {
+    birds = [];
+    for (var i = 0; i < 4; i++) {
+      birds.push({
+        x: rand(-W * 0.3, W),
+        y: rand(horizonY - 190, horizonY - 90),
+        v: rand(10, 20),
+        ph: rand(0, 6.28),
+        sc: rand(0.7, 1.25)
+      });
+    }
+  }
+
+  // ---------- 树 ----------
+  var treeSegs = [], leafAnchors = [];
+
+  function buildTree(ox, oy, len, ang, maxDepth, append) {
+    if (!append) { treeSegs = []; leafAnchors = []; }
+    var stack = [{ x: ox, y: oy, len: len, ang: ang, w: Math.max(6, W * 0.008), d: 0 }];
+    while (stack.length) {
+      var s = stack.pop();
+      if (s.d >= maxDepth || s.len < 9) { leafAnchors.push({ x: s.x, y: s.y, r: 34 }); continue; }
+      var x2 = s.x + Math.cos(s.ang) * s.len;
+      var y2 = s.y + Math.sin(s.ang) * s.len;
+      treeSegs.push({ x1: s.x, y1: s.y, x2: x2, y2: y2, w: s.w, d: s.d });
+      if (s.d === maxDepth - 2) leafAnchors.push({ x: x2, y: y2, r: 15 });
+      var n = s.d === 0 ? 2 : (Math.random() < 0.7 ? 2 : 3);
+      for (var i = 0; i < n; i++) {
+        var t = n === 1 ? 0 : (i / (n - 1) - 0.5);
+        stack.push({
+          x: x2, y: y2,
+          len: s.len * rand(0.66, 0.80),
+          ang: s.ang + t * rand(0.55, 1.05) + rand(-0.16, 0.16),
+          w: s.w * 0.6,
+          d: s.d + 1
+        });
+      }
+    }
+    treeSegs.sort(function (a, b) { return a.d - b.d; });
+  }
+
+  function paintTree() {
+    treeCx.clearRect(0, 0, W, H);
+    treeCx.lineCap = 'round';
+    for (var i = 0; i < treeSegs.length; i++) {
+      var s = treeSegs[i];
+      var t = s.d / 8;
+      treeCx.strokeStyle = 'rgba(' + Math.round(46 - t * 10) + ',' + Math.round(32 - t * 8) + ',' + Math.round(38 - t * 10) + ',1)';
+      treeCx.lineWidth = Math.max(0.8, s.w);
+      treeCx.beginPath();
+      treeCx.moveTo(s.x1, s.y1);
+      treeCx.lineTo(s.x2, s.y2);
+      treeCx.stroke();
+    }
+  }
+
+  function seedLeaves() {
+    leaves = [];
+    for (var i = 0; i < leafAnchors.length; i++) {
+      if (Math.random() < 0.26) continue;
+      var a = leafAnchors[i];
+      var per = 4 + ((Math.random() * 4) | 0);
+      for (var j = 0; j < per; j++) {
+        var rr = a.r || 34;
+        var ax = a.x + rand(-rr, rr);
+        var ay = a.y + rand(-rr, rr);
+        leaves.push({
+          ax: ax, ay: ay, x: ax, y: ay,
+          s: rand(3.0, 5.8),
+          rot: rand(0, 6.28),
+          baseRot: rand(0, 6.28),
+          spin: rand(-2.6, 2.6),
+          ph: rand(0, 6.28),
+          sw: rand(0, 6.28),
+          color: pick(LEAF_COLORS),
+          a: 1,
+          state: 1,      // 1=在树上 2=飘落 3=落地
+          vx: 0, vy: 0,
+          life: 0
+        });
+      }
+    }
+  }
+
+  function detach(l, force) {
+    l.state = 2;
+    l.vx = rand(-14, 14) + wind * 22 + (force || 0);
+    l.vy = rand(2, 12);
+    l.spin = rand(-3.2, 3.2);
+    l.sw = rand(0, 6.28);
+    l.life = 0;
+    // 树上替补一片新叶（延迟淡入）
+    var self = l;
+    setTimeout(function () {
+      leaves.push({
+        ax: self.ax, ay: self.ay, x: self.ax, y: self.ay,
+        s: rand(2.6, 5.2), rot: rand(0, 6.28), baseRot: rand(0, 6.28),
+        spin: rand(-2.6, 2.6), ph: rand(0, 6.28), sw: rand(0, 6.28),
+        color: pick(LEAF_COLORS), a: 0, state: 1, vx: 0, vy: 0, life: 0
+      });
+    }, rand(450, 1400));
+  }
+
+  // ---------- 渲染静态背景 ----------
+  function renderBG() {
+    var g = bgx;
+    g.clearRect(0, 0, W, H);
+
+    // 天空
+    var sky = g.createLinearGradient(0, 0, 0, horizonY + 12);
+    sky.addColorStop(0.00, '#161b2e');
+    sky.addColorStop(0.22, '#33304e');
+    sky.addColorStop(0.44, '#6d4f63');
+    sky.addColorStop(0.63, '#b06f5c');
+    sky.addColorStop(0.80, '#d98f63');
+    sky.addColorStop(0.92, '#f0b77b');
+    sky.addColorStop(1.00, '#fad9a2');
+    g.fillStyle = sky;
+    g.fillRect(0, 0, W, horizonY + 14);
+
+    // 高空星点
+    var rnd = mulberry32(7);
+    for (var i = 0; i < 46; i++) {
+      var sx = rnd() * W, sy = rnd() * horizonY * 0.34;
+      var al = rnd() * 0.5 * (1 - sy / (horizonY * 0.4));
+      if (al <= 0) continue;
+      g.fillStyle = 'rgba(255,236,205,' + al.toFixed(3) + ')';
+      g.fillRect(sx, sy, 1.2, 1.2);
+    }
+
+    // 太阳 + 光晕
+    var halo = g.createRadialGradient(sun.x, sun.y, 0, sun.x, sun.y, W * 0.42);
+    halo.addColorStop(0, 'rgba(255,226,170,0.55)');
+    halo.addColorStop(0.12, 'rgba(255,190,120,0.26)');
+    halo.addColorStop(0.42, 'rgba(240,150,95,0.10)');
+    halo.addColorStop(1, 'rgba(220,120,80,0)');
+    g.fillStyle = halo;
+    g.fillRect(0, 0, W, horizonY + 30);
+
+    var disc = g.createRadialGradient(sun.x, sun.y, 0, sun.x, sun.y, sun.r * 2.2);
+    disc.addColorStop(0, 'rgba(255,253,244,1)');
+    disc.addColorStop(0.30, 'rgba(255,238,198,0.98)');
+    disc.addColorStop(0.55, 'rgba(255,212,152,0.80)');
+    disc.addColorStop(0.80, 'rgba(255,186,118,0.22)');
+    disc.addColorStop(1, 'rgba(255,180,110,0)');
+    g.fillStyle = disc;
+    g.beginPath();
+    g.arc(sun.x, sun.y, sun.r * 2.2, 0, Math.PI * 2);
+    g.fill();
+
+    // 云
+    for (var c = 0; c < clouds.length; c++) {
+      var cl = clouds[c];
+      g.save();
+      g.translate(cl.x, cl.y);
+      g.scale(1, cl.ry / cl.rx);
+      var cg = g.createRadialGradient(0, 0, 0, 0, 0, cl.rx);
+      cg.addColorStop(0, 'rgba(255,206,164,' + (cl.a * 2.2) + ')');
+      cg.addColorStop(0.55, 'rgba(224,150,124,' + cl.a + ')');
+      cg.addColorStop(1, 'rgba(180,110,110,0)');
+      g.fillStyle = cg;
+      g.beginPath();
+      g.arc(0, 0, cl.rx, 0, Math.PI * 2);
+      g.fill();
+      g.restore();
+    }
+
+    // 远山
+    for (var r = 0; r < ridges.length; r++) {
+      pathRidge(g, ridges[r].pts);
+      g.fillStyle = ridges[r].color;
+      g.fill();
+    }
+
+    // 塔影（保俶塔剪影，点在第三层山脊上）
+    drawPagoda(g, W * 0.235, ridges[2].pts[2].y + 6, Math.min(W, H) * 0.045);
+
+    // 山脚薄雾
+    var mist = g.createLinearGradient(0, horizonY - 86, 0, horizonY + 10);
+    mist.addColorStop(0, 'rgba(248,214,182,0)');
+    mist.addColorStop(0.55, 'rgba(248,214,182,0.16)');
+    mist.addColorStop(1, 'rgba(255,226,190,0.30)');
+    g.fillStyle = mist;
+    g.fillRect(0, horizonY - 86, W, 96);
+
+    // 水面
+    var wa = g.createLinearGradient(0, horizonY, 0, groundY + 20);
+    wa.addColorStop(0.00, '#e9a877');
+    wa.addColorStop(0.10, '#c2846c');
+    wa.addColorStop(0.32, '#7d5c66');
+    wa.addColorStop(0.62, '#4a3a4d');
+    wa.addColorStop(1.00, '#221d2c');
+    g.fillStyle = wa;
+    g.fillRect(0, horizonY, W, H - horizonY);
+
+    // 倒影（把山与太阳镜像画进水面）
+    g.save();
+    g.beginPath();
+    g.rect(0, horizonY, W, groundY - horizonY + 6);
+    g.clip();
+    g.globalAlpha = 0.30;
+    g.translate(0, horizonY * 2);
+    g.scale(1, -1);
+    for (var r2 = 0; r2 < ridges.length; r2++) {
+      pathRidge(g, ridges[r2].pts, horizonY);
+      g.fillStyle = ridges[r2].color;
+      g.fill();
+    }
+    var halo2 = g.createRadialGradient(sun.x, sun.y, 0, sun.x, sun.y, W * 0.3);
+    halo2.addColorStop(0, 'rgba(255,214,150,0.5)');
+    halo2.addColorStop(1, 'rgba(255,190,130,0)');
+    g.fillStyle = halo2;
+    g.fillRect(0, 0, W, horizonY + 40);
+    g.restore();
+
+    // 太阳在水面的光柱（柔和的椭圆扩散，不用硬边梯形）
+    g.save();
+    g.beginPath();
+    g.rect(0, horizonY, W, groundY - horizonY);
+    g.clip();
+    g.translate(sun.x, horizonY);
+    g.scale(1, 2.1);
+    var RR = (groundY - horizonY) * 1.05;
+    var beam = g.createRadialGradient(0, 0, 0, 0, 0, RR);
+    beam.addColorStop(0, 'rgba(255,226,178,0.50)');
+    beam.addColorStop(0.28, 'rgba(255,198,142,0.26)');
+    beam.addColorStop(0.62, 'rgba(252,176,118,0.10)');
+    beam.addColorStop(1, 'rgba(250,170,110,0)');
+    g.fillStyle = beam;
+    g.beginPath();
+    g.arc(0, 0, RR, 0, Math.PI * 2);
+    g.fill();
+    g.restore();
+
+    // 近景岸
+    var shore = g.createLinearGradient(0, groundY - 30, 0, H);
+    shore.addColorStop(0, 'rgba(30,24,34,0)');
+    shore.addColorStop(0.12, 'rgba(28,22,32,0.92)');
+    shore.addColorStop(0.45, '#1e1824');
+    shore.addColorStop(1, '#151020');
+    g.fillStyle = shore;
+    g.beginPath();
+    g.moveTo(0, groundY + 10);
+    g.bezierCurveTo(W * 0.25, groundY - 12, W * 0.55, groundY + 16, W, groundY - 6);
+    g.lineTo(W, H);
+    g.lineTo(0, H);
+    g.closePath();
+    g.fill();
+
+    // 岸沿暖色反光，让水与地分开
+    g.beginPath();
+    g.moveTo(0, groundY + 10);
+    g.bezierCurveTo(W * 0.25, groundY - 12, W * 0.55, groundY + 16, W, groundY - 6);
+    g.strokeStyle = 'rgba(255,206,150,0.07)';
+    g.lineWidth = 1.1;
+    g.stroke();
+
+    // 树根的落叶堆
+    var rnd4 = mulberry32(53);
+    for (var ti = 0; ti < 70; ti++) {
+      var tx = treeRootX + (rnd4() - 0.5) * W * 0.17;
+      var ty = groundY + 4 + rnd4() * 30;
+      g.save();
+      g.translate(tx, ty);
+      g.rotate(rnd4() * 6.28);
+      g.globalAlpha = 0.22 + rnd4() * 0.3;
+      g.fillStyle = '#d9a94e';
+      g.beginPath();
+      g.ellipse(0, 0, 3.2 + rnd4() * 3.4, 1.8 + rnd4() * 1.5, 0, 0, Math.PI * 2);
+      g.fill();
+      g.restore();
+    }
+
+    // 岸上零散的落叶
+    var rnd3 = mulberry32(91);
+    for (var li = 0; li < 110; li++) {
+      var lx = rnd3() * W;
+      var ly = groundY + 2 + rnd3() * 42;
+      g.save();
+      g.translate(lx, ly);
+      g.rotate(rnd3() * 6.28);
+      g.globalAlpha = 0.14 + rnd3() * 0.26;
+      g.fillStyle = '#c99a4a';
+      g.beginPath();
+      g.ellipse(0, 0, 3.4 + rnd3() * 3, 1.9 + rnd3() * 1.4, 0, 0, Math.PI * 2);
+      g.fill();
+      g.restore();
+    }
+  }
+
+  function drawPagoda(g, x, y, h) {
+    if (h < 8) return;
+    var w = h * 0.30;
+    g.fillStyle = 'rgba(38,32,52,0.96)';
+    var tiers = 5;
+    for (var i = 0; i < tiers; i++) {
+      var ty = y - (i + 1) * (h / (tiers + 1.4));
+      var tw = w * (1 - i * 0.13);
+      g.beginPath();
+      g.moveTo(x - tw, ty);
+      g.lineTo(x + tw, ty);
+      g.lineTo(x + tw * 0.72, ty - h * 0.055);
+      g.lineTo(x - tw * 0.72, ty - h * 0.055);
+      g.closePath();
+      g.fill();
+      g.fillRect(x - tw * 0.5, ty - h * 0.13, tw, h * 0.13);
+    }
+    g.beginPath();
+    g.moveTo(x, y - h - h * 0.12);
+    g.lineTo(x + w * 0.09, y - h + h * 0.02);
+    g.lineTo(x - w * 0.09, y - h + h * 0.02);
+    g.closePath();
+    g.fill();
+  }
+
+  // ---------- 动态元素 ----------
+  function drawGlints(t) {
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    for (var i = 0; i < glints.length; i++) {
+      var g = glints[i];
+      var a = Math.max(0, Math.sin(t * g.sp + g.ph)) * g.base;
+      if (a < 0.008) continue;
+      var depth = (g.y - horizonY) / Math.max(1, groundY - horizonY);
+      ctx.fillStyle = 'rgba(255,222,172,' + a.toFixed(3) + ')';
+      ctx.fillRect(g.x + Math.sin(t * 0.55 + g.ph) * 6, g.y, g.len * (0.45 + depth), Math.max(0.8, 0.7 + depth * 2));
+    }
+    ctx.restore();
+  }
+
+  function drawReeds(t) {
+    ctx.save();
+    ctx.lineCap = 'round';
+    for (var i = 0; i < reeds.length; i++) {
+      var r = reeds[i];
+      var sway = Math.sin(t * r.sp + r.ph) * (5 + Math.abs(wind) * 10);
+      var tipX = r.x + r.bend * r.h * 0.35 + sway;
+      var tipY = r.y - r.h;
+      var midX = r.x + r.bend * r.h * 0.12 + sway * 0.35;
+      var midY = r.y - r.h * 0.52;
+      ctx.strokeStyle = 'rgba(28,22,32,0.92)';
+      ctx.lineWidth = r.w;
+      ctx.beginPath();
+      ctx.moveTo(r.x, r.y);
+      ctx.quadraticCurveTo(midX, midY, tipX, tipY);
+      ctx.stroke();
+      // 穗
+      if (r.h > 70) {
+        ctx.strokeStyle = 'rgba(196,168,132,0.30)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(tipX, tipY);
+        ctx.lineTo(tipX + Math.sin(t * 1.3 + r.ph) * 4, tipY - r.h * 0.10);
+        ctx.stroke();
+      }
+    }
+    ctx.restore();
+  }
+
+  function drawBirds(t, dt) {
+    ctx.save();
+    ctx.strokeStyle = 'rgba(26,22,36,0.5)';
+    ctx.lineWidth = 1.5;
+    ctx.lineCap = 'round';
+    for (var i = 0; i < birds.length; i++) {
+      var b = birds[i];
+      b.x += b.v * dt;
+      b.ph += dt * 7;
+      if (b.x > W + 60) { b.x = -60; b.y = rand(horizonY - 190, horizonY - 90); }
+      var f = Math.sin(b.ph) * 3.2 * b.sc;
+      var s = 7 * b.sc;
+      ctx.beginPath();
+      ctx.moveTo(b.x - s, b.y + f);
+      ctx.quadraticCurveTo(b.x - s * 0.42, b.y - 3 * b.sc + f * 0.4, b.x, b.y);
+      ctx.quadraticCurveTo(b.x + s * 0.42, b.y - 3 * b.sc + f * 0.4, b.x + s, b.y + f);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  function drawLeaves(t, dt) {
+    for (var i = leaves.length - 1; i >= 0; i--) {
+      var l = leaves[i];
+
+      if (l.state === 1) {
+        // 在树上：随风呼吸
+        l.ph += dt * 1.7;
+        l.x = l.ax + Math.sin(l.ph) * 1.8 + wind * 7 * Math.sin(l.ph * 0.63);
+        l.y = l.ay + Math.cos(l.ph * 1.31) * 1.3;
+        l.rot = l.baseRot + Math.sin(l.ph) * 0.35;
+        if (l.a < 1) l.a = Math.min(1, l.a + dt * 0.8);
+        if (Math.random() < 0.00012 + Math.abs(wind) * 0.00038) detach(l, 0);
+      } else if (l.state === 2) {
+        // 飘落
+        l.life += dt;
+        l.vy += 16 * dt;
+        if (l.vy > 54) l.vy = 54;
+        l.vx += (wind * 62 + gust * 34) * dt;
+        l.vx *= (1 - 1.2 * dt);
+        l.sw += dt * 2.1;
+        l.x += (l.vx + Math.sin(l.sw) * 22) * dt;
+        l.y += l.vy * dt;
+        l.rot += (l.spin + Math.sin(l.sw) * 1.6) * dt;
+
+        if (l.y >= groundY + Math.sin(l.x * 0.012) * 10) {
+          l.state = 3;
+          l.y = groundY + Math.sin(l.x * 0.012) * 10 + rand(-3, 6);
+          l.rot = rand(-0.5, 0.5);
+        } else if (l.x < -60 || l.x > W + 60) {
+          leaves.splice(i, 1);
+          continue;
+        }
+      } else {
+        // 落地：静止、缓慢氧化变暗
+        l.rot += Math.sin(t * 0.6 + l.ph) * 0.0012;
+      }
+
+      // 绘制
+      var isLanded = l.state === 3;
+      ctx.save();
+      ctx.translate(l.x, l.y);
+      ctx.rotate(l.rot);
+      ctx.globalAlpha = l.a * (isLanded ? 0.72 : 1);
+      ctx.fillStyle = l.color;
+      ctx.beginPath();
+      ctx.ellipse(0, 0, l.s * (isLanded ? 1.18 : 1), l.s * 0.55, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+
+    // 控制总量，避免落地叶无限堆积
+    if (leaves.length > 1500) {
+      for (var k = 0; k < leaves.length && leaves.length > 1500; k++) {
+        if (leaves[k].state !== 1) { leaves.splice(k, 1); k--; }
+      }
+    }
+  }
+
+  var fgSprites = {};
+  function makeFgSprite(color) {
+    if (fgSprites[color]) return fgSprites[color];
+    var c = document.createElement('canvas');
+    c.width = 256; c.height = 256;
+    var g = c.getContext('2d');
+    g.translate(128, 168);
+    g.filter = 'blur(19px)';
+    g.fillStyle = color;
+    leafPath(g, 76);
+    g.fill();
+    g.filter = 'none';
+    fgSprites[color] = c;
+    return c;
+  }
+
+  function buildFgLeaves() {
+    fgLeaves = [];
+    for (var i = 0; i < 4; i++) {
+      var col = pick(['#d99b3c', '#c9822c', '#e0ad4a']);
+      fgLeaves.push({
+        x: rand(0, W), y: rand(H * 0.30, H * 0.95),
+        s: rand(72, 128), rot: rand(0, 6.28),
+        v: rand(-7, 7), vy: rand(-5, 5),
+        a: rand(0.16, 0.30), sp: rand(0.4, 1.1), ph: rand(0, 6.28),
+        sprite: makeFgSprite(col)
+      });
+    }
+  }
+
+  function leafPath(g, s) {
+    g.beginPath();
+    g.moveTo(0, 0);
+    g.bezierCurveTo(s * 0.88, -s * 0.22, s * 0.72, -s * 0.98, 0, -s * 1.12);
+    g.bezierCurveTo(-s * 0.72, -s * 0.98, -s * 0.88, -s * 0.22, 0, 0);
+    g.closePath();
+  }
+
+  function drawFgLeaves(t, dt) {
+    ctx.save();
+    for (var i = 0; i < fgLeaves.length; i++) {
+      var f = fgLeaves[i];
+      f.x += (f.v + wind * 26) * dt;
+      f.y += (f.vy + Math.sin(t * f.sp + f.ph) * 5) * dt;
+      f.rot += dt * 0.16;
+      if (f.x < -90) f.x = W + 70;
+      if (f.x > W + 90) f.x = -70;
+      if (f.y < -90) f.y = H + 70;
+      if (f.y > H + 90) f.y = -70;
+      ctx.save();
+      ctx.translate(f.x, f.y);
+      ctx.rotate(f.rot);
+      ctx.globalAlpha = f.a;
+      var d = f.s * 2.9;
+      ctx.drawImage(f.sprite, -d * 0.5, -d * 0.62, d, d);
+      ctx.restore();
+    }
+    ctx.restore();
+  }
+
+  // ---------- 初始化 ----------
+  function init() {
+    DPR = Math.min(window.devicePixelRatio || 1, 2);
+    W = window.innerWidth;
+    H = window.innerHeight;
+
+    cvs.width = Math.round(W * DPR);
+    cvs.height = Math.round(H * DPR);
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+    horizonY = H * 0.585;
+    groundY = H * 0.885;
+    sun = { x: W * 0.675, y: horizonY - H * 0.075, r: Math.max(16, Math.min(W, H) * 0.030) };
+
+    bg = document.createElement('canvas');
+    bg.width = Math.round(W * DPR);
+    bg.height = Math.round(H * DPR);
+    bgx = bg.getContext('2d');
+    bgx.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+    treeCv = document.createElement('canvas');
+    treeCv.width = Math.round(W * DPR);
+    treeCv.height = Math.round(H * DPR);
+    treeCx = treeCv.getContext('2d');
+    treeCx.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+    buildRidges();
+    buildClouds();
+    buildWater();
+    buildReeds();
+    buildBirds();
+
+    // 主树（右边的大银杏）+ 左边的小树，共用一层
+    var treeH = Math.min(H * 0.56, W * 0.48);
+    var narrow = W < 600;
+    treeRootX = W * (narrow ? 0.70 : 0.755);
+    buildTree(treeRootX, groundY + 16, treeH * 0.34, -Math.PI / 2 + 0.05, 7);
+    buildTree(W * (narrow ? 0.10 : 0.075), groundY + 30, treeH * 0.17, -Math.PI / 2 - 0.14, 6, true);
+
+    paintTree();
+    seedLeaves();
+
+    buildFgLeaves();
+    renderBG();
+    cvs.classList.add('ready');
+  }
+
+  // ---------- 主循环 ----------
+  function frame(now) {
+    if (!lastTime) lastTime = now;
+    var dt = Math.min(0.05, (now - lastTime) / 1000);
+    lastTime = now;
+    time += dt;
+
+    // 风：鼠标位置 + 阵风
+    gust = Math.sin(time * 0.63) * 0.32 + Math.sin(time * 1.71 + 1.2) * 0.16;
+    wind += (windTarget - wind) * Math.min(1, dt * 1.6);
+
+    ctx.clearRect(0, 0, W, H);
+    ctx.drawImage(bg, 0, 0, W, H);
+
+    drawGlints(time);
+    drawBirds(time, dt);
+
+    // 树（极轻微摇摆）
+    var sway = Math.sin(time * 0.9) * 0.0016 + wind * 0.0022;
+    ctx.save();
+    ctx.translate(treeRootX, groundY + 16);
+    ctx.rotate(sway);
+    ctx.translate(-treeRootX, -(groundY + 16));
+    ctx.drawImage(treeCv, 0, 0, W, H);
+    ctx.restore();
+
+    drawLeaves(time, dt);
+    drawReeds(time);
+    drawFgLeaves(time, dt);
+
+    requestAnimationFrame(frame);
+  }
+
+  // ---------- 交互 ----------
+  window.addEventListener('pointermove', function (e) {
+    windTarget = (e.clientX / W - 0.5) * 2.2;
+  }, { passive: true });
+
+  window.addEventListener('pointerdown', function () {
+    windTarget = windTarget * 1.4;
+    for (var i = 0; i < leaves.length; i++) {
+      var l = leaves[i];
+      if (l.state === 1 && Math.random() < 0.55) {
+        detach(l, rand(-30, 30));
+      } else if (l.state === 2) {
+        l.vx += rand(-26, 26);
+        l.vy += rand(-6, 10);
+      }
+    }
+  });
+
+  window.addEventListener('touchmove', function (e) {
+    if (e.touches.length) windTarget = (e.touches[0].clientX / W - 0.5) * 2.2;
+  }, { passive: true });
+
+  var resizeTimer = null;
+  window.addEventListener('resize', function () {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(init, 220);
+  });
+
+  // 触屏设备换一套提示文案
+  if ('ontouchstart' in window || navigator.maxTouchPoints > 0) {
+    var hintEl = document.querySelector('.hint');
+    if (hintEl) {
+      hintEl.innerHTML = '<span class="dot"></span>滑动屏幕<em>，</em>起一阵风<br>' +
+                         '<span class="dot"></span>轻点画面<em>，</em>落一场叶雨';
+    }
+  }
+
+  init();
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
