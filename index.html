@@ -71,24 +71,49 @@
   }
 
   .hint {
-    align-self: flex-end;
-    text-align: right;
-    font-size: clamp(10px, 1.1vw, 12px);
-    letter-spacing: .18em;
-    line-height: 2.1;
-    color: rgba(255, 238, 216, .55);
-    text-shadow: 0 1px 10px rgba(14, 8, 6, .85), 0 0 2px rgba(14, 8, 6, .6);
-    font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+    position: absolute;
+    left: 50%; top: 50%;
+    transform: translate(-50%, -50%);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 14px;
     opacity: 0;
     animation: fade 1.8s ease 2.2s forwards;
+    pointer-events: none;
   }
-  .hint b { color: rgba(255, 220, 170, .7); font-weight: 400; }
-  .hint em { font-style: normal; }
+  .act-btn {
+    pointer-events: auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    padding: 12px 26px;
+    font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+    font-size: clamp(13px, 1.4vw, 15px);
+    letter-spacing: .16em;
+    color: rgba(255, 240, 220, .9);
+    background: rgba(16, 12, 20, .42);
+    -webkit-backdrop-filter: blur(8px);
+    backdrop-filter: blur(8px);
+    border: 1px solid rgba(240, 180, 90, .35);
+    border-radius: 999px;
+    box-shadow: 0 4px 22px rgba(8, 5, 12, .45);
+    cursor: pointer;
+    transition: background .3s ease, border-color .3s ease, color .3s ease, transform .3s ease;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .act-btn:hover {
+    background: rgba(240, 180, 90, .14);
+    border-color: rgba(240, 180, 90, .7);
+    color: #fff3df;
+    transform: translateY(-1px);
+  }
+  .act-btn:active { transform: translateY(0) scale(.98); }
   .dot {
     display: inline-block;
-    width: 3px; height: 3px; border-radius: 50%;
-    background: rgba(240,180,90,.8);
-    margin: 0 .5em 3px;
+    width: 4px; height: 4px; border-radius: 50%;
+    background: rgba(240,180,90,.85);
+    flex: none;
   }
 
   @keyframes rise {
@@ -100,15 +125,12 @@
 
   @media (max-width: 600px) {
     .hint {
-      align-self: center;
-      text-align: center;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .act-btn {
+      padding: 12px 30px;
       letter-spacing: .14em;
-      line-height: 1.9;
-      background: rgba(12, 9, 16, .40);
-      -webkit-backdrop-filter: blur(7px);
-      backdrop-filter: blur(7px);
-      padding: 10px 20px;
-      border-radius: 999px;
     }
     h1 { letter-spacing: .18em; }
   }
@@ -127,8 +149,8 @@
     <div class="rule"></div>
   </div>
   <div class="hint">
-    <span class="dot"></span>移动鼠标<em>，</em>起一阵风<br>
-    <span class="dot"></span>轻点画面<em>，</em>落一场叶雨
+    <button class="act-btn" id="btn-wind" type="button"><span class="dot"></span>起一阵风</button>
+    <button class="act-btn" id="btn-leaves" type="button"><span class="dot"></span>落一场叶雨</button>
   </div>
 </div>
 
@@ -148,7 +170,7 @@
   var leaves = [];
   var sun = { x: 0, y: 0, r: 0 };
 
-  var wind = 0, windTarget = 0, gust = 0, time = 0, lastTime = 0;
+  var wind = 0, windTarget = 0, gust = 0, windBurst = 0, time = 0, lastTime = 0;
   var treeRootX = 0;
 
   var LEAF_COLORS = ['#e9b64a', '#e0a83a', '#d69a30', '#c9882b', '#b8722a', '#d9ae4e', '#c47230', '#e3a940'];
@@ -655,7 +677,7 @@
         l.life += dt;
         l.vy += 16 * dt;
         if (l.vy > 54) l.vy = 54;
-        l.vx += (wind * 62 + gust * 34) * dt;
+        l.vx += (wind * 62 + gust * 34 + windBurst * 110) * dt;
         l.vx *= (1 - 1.2 * dt);
         l.sw += dt * 2.1;
         l.x += (l.vx + Math.sin(l.sw) * 22) * dt;
@@ -813,6 +835,7 @@
     // 风：鼠标位置 + 阵风
     gust = Math.sin(time * 0.63) * 0.32 + Math.sin(time * 1.71 + 1.2) * 0.16;
     wind += (windTarget - wind) * Math.min(1, dt * 1.6);
+    windBurst *= Math.max(0, 1 - dt * 1.1);
 
     ctx.clearRect(0, 0, W, H);
     ctx.drawImage(bg, 0, 0, W, H);
@@ -821,7 +844,8 @@
     drawBirds(time, dt);
 
     // 树（极轻微摇摆）
-    var sway = Math.sin(time * 0.9) * 0.0016 + wind * 0.0022;
+    var sway = Math.sin(time * 0.9) * 0.0016 + wind * 0.0022 +
+               windBurst * Math.sin(time * 5.2) * 0.02;
     ctx.save();
     ctx.translate(treeRootX, groundY + 16);
     ctx.rotate(sway);
@@ -841,7 +865,9 @@
     windTarget = (e.clientX / W - 0.5) * 2.2;
   }, { passive: true });
 
-  window.addEventListener('pointerdown', function () {
+  window.addEventListener('pointerdown', function (e) {
+    // 点在按钮上时不触发“轻点画面”的落叶，避免和按钮效果混在一起
+    if (e.target && e.target.closest && e.target.closest('.act-btn')) return;
     windTarget = windTarget * 1.4;
     for (var i = 0; i < leaves.length; i++) {
       var l = leaves[i];
@@ -864,13 +890,34 @@
     resizeTimer = setTimeout(init, 220);
   });
 
-  // 触屏设备换一套提示文案
-  if ('ontouchstart' in window || navigator.maxTouchPoints > 0) {
-    var hintEl = document.querySelector('.hint');
-    if (hintEl) {
-      hintEl.innerHTML = '<span class="dot"></span>滑动屏幕<em>，</em>起一阵风<br>' +
-                         '<span class="dot"></span>轻点画面<em>，</em>落一场叶雨';
-    }
+  // 中部按钮：起风 / 叶雨
+  var windBtn = document.getElementById('btn-wind');
+  var leafBtn = document.getElementById('btn-leaves');
+  var gustTimer = null;
+  if (windBtn) {
+    windBtn.addEventListener('click', function () {
+      // 一阵强风：树身摇动、空中叶片横飞，只带落少量叶子
+      windBurst = 1;
+      windTarget = 2.2;
+      clearTimeout(gustTimer);
+      gustTimer = setTimeout(function () { windTarget = 0; }, 1600);
+      for (var i = 0; i < leaves.length; i++) {
+        var l = leaves[i];
+        if (l.state === 1 && Math.random() < 0.1) {
+          detach(l, rand(-20, 20));
+        } else if (l.state === 2) {
+          l.vx += rand(20, 60);
+        }
+      }
+    });
+  }
+  if (leafBtn) {
+    leafBtn.addEventListener('click', function () {
+      // 叶雨：满树叶子同时落下
+      for (var i = 0; i < leaves.length; i++) {
+        if (leaves[i].state === 1) detach(leaves[i], rand(-24, 24));
+      }
+    });
   }
 
   init();
